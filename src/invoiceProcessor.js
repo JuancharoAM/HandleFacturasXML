@@ -135,13 +135,21 @@ function resolveIvaRate(impuesto) {
 }
 
 function aggregateByRate(lineItems, resumen) {
-  // v1.0.2 refined: Prefer desglose del Resumen; si no viene, usar líneas
-  const breakdown = new Map();
-  const registerAmount = (rate, amount) => {
+  // Prefer desglose del Resumen; si no viene, usar líneas.
+  const ivaByRate = new Map();
+  const baseByRate = new Map();
+  const addIva = (rate, amount) => {
     const r = rate;
     const a = toNumber(amount);
     if (r === null || r === undefined || !Number.isFinite(a)) return;
-    breakdown.set(r, (breakdown.get(r) ?? 0) + a);
+    ivaByRate.set(r, (ivaByRate.get(r) ?? 0) + a);
+  };
+  const addBase = (rate, amount) => {
+    const r = rate;
+    const a = toNumber(amount);
+    if (r === null || r === undefined || !Number.isFinite(a)) return;
+    if (r === 0) return; // no base gravada para 0%
+    baseByRate.set(r, (baseByRate.get(r) ?? 0) + a);
   };
 
   // Gather all possible desglose entries robustly
@@ -166,12 +174,15 @@ function aggregateByRate(lineItems, resumen) {
     const key = `${codigo}|${codeTarifa}|${amount}`;
     if (amount !== undefined && !seen.has(key)) {
       seen.add(key);
-      registerAmount(rate, amount);
+      addIva(rate, amount);
+      if (rate && rate > 0) {
+        addBase(rate, amount / (rate / 100));
+      }
     }
   }
 
   // If no valid desglose found in resumen, compute from line items
-  if (breakdown.size === 0) {
+  if (ivaByRate.size === 0) {
     source = 'lineas';
     for (const line of lineItems || []) {
       const impuestos = normalizeToArray(line?.Impuesto || line?.Impuestos);
@@ -181,14 +192,17 @@ function aggregateByRate(lineItems, resumen) {
         const rate = resolveIvaRate(imp);
         const amount = imp?.Monto ?? imp?.MontoImpuesto;
         if (rate !== null && rate !== undefined && amount !== undefined) {
-          registerAmount(rate, amount);
+          addIva(rate, amount);
+          const base = line?.BaseImponible ?? line?.SubTotal ?? line?.MontoTotal ?? line?.MontoTotalLinea ?? 0;
+          if (base) addBase(rate, base);
         }
       }
     }
   }
 
-  const totals = Object.fromEntries(Array.from(breakdown.entries()));
-  return { breakdown, totals, source };
+  const ivaTotals = Object.fromEntries(Array.from(ivaByRate.entries()));
+  const baseTotals = Object.fromEntries(Array.from(baseByRate.entries()));
+  return { breakdown: ivaByRate, totals: ivaTotals, baseTotals, source };
 }
 
 function reconcileIvaBreakdown(totalsObj, expectedTotal) {
@@ -383,7 +397,7 @@ export async function processInvoices(directory, { startDate = null, endDate = n
       const issueDate = extractInvoiceDate(root);
       const summary = extractSummary(root);
       const lineItems = extractLineItems(root);
-      const { breakdown, totals: ivaTotalsRaw, source: ivaSource } = aggregateByRate(lineItems, summary.resumenRaw);
+      const { breakdown, totals: ivaTotalsRaw, baseTotals, source: ivaSource } = aggregateByRate(lineItems, summary.resumenRaw);
       const expectedIvaTotal = toNumber(summary.totalIVA || 0);
       const { totals: ivaTotals, info: ivaInfo } = reconcileIvaBreakdown(ivaTotalsRaw, expectedIvaTotal);
 
@@ -410,6 +424,7 @@ export async function processInvoices(directory, { startDate = null, endDate = n
         subtotal: summary.subtotal,
         totalIVA,
         ivaRateTotals: ivaTotals,
+        ivaBaseTotals: baseTotals,
         totalComprobante: summary.totalComprobante,
         isExenta: totalIVA === 0 && summary.totalExento > 0,
         exento: summary.totalExento,
@@ -425,13 +440,16 @@ export async function processInvoices(directory, { startDate = null, endDate = n
   const aggregates = filteredInvoices.reduce(
     (acc, invoice) => {
       acc.totalGravado += invoice.totalGravado;
-      acc.subtotal += invoice.subtotal;
       acc.totalIVA += invoice.totalIVA;
       acc.totalComprobante += invoice.totalComprobante;
       acc.totalExento += invoice.exento ?? 0;
-      for (const [rateStr, amount] of Object.entries(invoice.ivaRateTotals)) {
+      for (const [rateStr, amount] of Object.entries(invoice.ivaRateTotals || {})) {
         const rate = Number(rateStr);
         acc.ivaRateTotals[rate] = (acc.ivaRateTotals[rate] ?? 0) + (amount ?? 0);
+      }
+      for (const [rateStr, base] of Object.entries(invoice.ivaBaseTotals || {})) {
+        const rate = Number(rateStr);
+        acc.gravadoRateTotals[rate] = (acc.gravadoRateTotals[rate] ?? 0) + (base ?? 0);
       }
       if (invoice.isExenta) {
         acc.exentasCount += 1;
@@ -440,11 +458,11 @@ export async function processInvoices(directory, { startDate = null, endDate = n
     },
     {
       totalGravado: 0,
-      subtotal: 0,
       totalIVA: 0,
       totalComprobante: 0,
       totalExento: 0,
       ivaRateTotals: {},
+      gravadoRateTotals: {},
       exentasCount: 0,
     },
   );

@@ -20,7 +20,6 @@ function addHeaderRow(worksheet, ivaRates) {
     { header: 'Consecutivo', key: 'consecutivo', width: 20 },
     { header: 'Fecha', key: 'fecha', width: 15 },
     { header: 'Total Gravado', key: 'totalGravado', width: 18 },
-    { header: 'Subtotal', key: 'subtotal', width: 15 },
     { header: 'Exento', key: 'exento', width: 15 },
     { header: 'IVA Total', key: 'totalIVA', width: 15 },
   ];
@@ -52,7 +51,6 @@ function addInvoiceRows(worksheet, invoices, ivaRates) {
       consecutivo: invoice.consecutivo,
       fecha: formatDate(invoice.issueDate),
       totalGravado: invoice.totalGravado,
-      subtotal: invoice.subtotal,
       exento: invoice.exento ?? 0,
       totalIVA: invoice.totalIVA,
       totalComprobante: invoice.totalComprobante,
@@ -79,7 +77,6 @@ function addTotalsRow(worksheet, aggregates, ivaRates) {
   const rowData = {
     fileName: 'Totales',
     totalGravado: aggregates.totalGravado,
-    subtotal: aggregates.subtotal,
     exento: aggregates.totalExento ?? 0,
     totalIVA: aggregates.totalIVA,
     totalComprobante: aggregates.totalComprobante,
@@ -101,13 +98,23 @@ function addSummarySheet(workbook, aggregates, invoiceCount) {
     { header: 'Valor', key: 'value', width: 20 },
   ];
 
-  sheet.addRow({ concept: 'Facturas procesadas', value: invoiceCount });
   sheet.addRow({ concept: 'Total Gravado', value: aggregates.totalGravado });
-  sheet.addRow({ concept: 'Subtotal', value: aggregates.subtotal });
   sheet.addRow({ concept: 'IVA Total', value: aggregates.totalIVA });
   sheet.addRow({ concept: 'Total Comprobante', value: aggregates.totalComprobante });
-  sheet.addRow({ concept: 'Total facturas exentas', value: aggregates.exentasCount ?? 0 });
   sheet.addRow({ concept: 'Monto exento total', value: aggregates.totalExento ?? 0 });
+
+  // Add per-rate totals (gravado e IVA) excluding 0%
+  const ivaRates = Object.keys(aggregates.ivaRateTotals || {})
+    .map((k) => Number(k))
+    .filter((r) => r !== 0)
+    .sort((a, b) => a - b);
+
+  ivaRates.forEach((rate) => {
+    const grav = aggregates.gravadoRateTotals?.[rate] ?? 0;
+    const iva = aggregates.ivaRateTotals?.[rate] ?? 0;
+    sheet.addRow({ concept: `Total gravado ${rate}%`, value: grav });
+    sheet.addRow({ concept: `Total IVA ${rate}%`, value: iva });
+  });
 
   sheet.getRow(1).font = { bold: true };
   sheet.getColumn('value').numFmt = '#,##0.00';
