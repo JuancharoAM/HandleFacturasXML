@@ -7,8 +7,6 @@ const parser = new XMLParser({
   attributeNamePrefix: '',
   parseTagValue: true,
   trimValues: true,
-  ignoreDeclaration: true,
-  ignoreNameSpace: true,
 });
 
 const IVA_RATES_OF_INTEREST = [1, 2, 13];
