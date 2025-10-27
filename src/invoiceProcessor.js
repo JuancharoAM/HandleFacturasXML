@@ -12,7 +12,6 @@ const parser = new XMLParser({
   ignoreNameSpace: true,
 });
 
-const IVA_RATES_OF_INTEREST = [1, 2, 13];
 const IVA_CODE_TO_RATE = {
   '01': 13,
   '02': 1,
@@ -148,10 +147,9 @@ function aggregateByRate(lineItems, resumen) {
     }
   }
 
-  const totals = {};
-  for (const rate of IVA_RATES_OF_INTEREST) {
-    totals[rate] = breakdown.get(rate) ?? 0;
-  }
+  const totals = Object.fromEntries(
+    Array.from(breakdown.entries()).map(([rate, amount]) => [rate, amount]),
+  );
 
   return { breakdown, totals };
 }
@@ -179,6 +177,7 @@ function extractSummary(invoiceData) {
       subtotal: 0,
       totalIVA: 0,
       totalComprobante: 0,
+      totalExento: 0,
       resumenRaw: null,
     };
   }
@@ -232,12 +231,25 @@ function extractSummary(invoiceData) {
       0,
     );
   }
+  // Total exento por resumen
+  let totalExento = toNumber(
+    pickFirstAvailable(resumen, [
+      'TotalExento',
+    ]),
+  );
+  if (!totalExento) {
+    totalExento = sumIfPresent([
+      resumen.TotalServExentos,
+      resumen.TotalMercanciasExentas,
+    ]);
+  }
 
   return {
     totalGravado,
     subtotal,
     totalIVA,
     totalComprobante,
+    totalExento,
     resumenRaw: resumen,
   };
 }
@@ -298,6 +310,8 @@ export async function processInvoices(directory, { startDate = null, endDate = n
         totalIVA,
         ivaRateTotals: ivaTotals,
         totalComprobante: summary.totalComprobante,
+        isExenta: totalIVA === 0 && summary.totalExento > 0,
+        exento: summary.totalExento,
       });
     } catch (error) {
       console.warn(`No se pudo procesar el archivo ${filePath}: ${error.message}`);
@@ -312,8 +326,13 @@ export async function processInvoices(directory, { startDate = null, endDate = n
       acc.subtotal += invoice.subtotal;
       acc.totalIVA += invoice.totalIVA;
       acc.totalComprobante += invoice.totalComprobante;
-      for (const rate of IVA_RATES_OF_INTEREST) {
-        acc.ivaRateTotals[rate] += invoice.ivaRateTotals[rate] ?? 0;
+      acc.totalExento += invoice.exento ?? 0;
+      for (const [rateStr, amount] of Object.entries(invoice.ivaRateTotals)) {
+        const rate = Number(rateStr);
+        acc.ivaRateTotals[rate] = (acc.ivaRateTotals[rate] ?? 0) + (amount ?? 0);
+      }
+      if (invoice.isExenta) {
+        acc.exentasCount += 1;
       }
       return acc;
     },
@@ -322,10 +341,9 @@ export async function processInvoices(directory, { startDate = null, endDate = n
       subtotal: 0,
       totalIVA: 0,
       totalComprobante: 0,
-      ivaRateTotals: IVA_RATES_OF_INTEREST.reduce((acc, rate) => {
-        acc[rate] = 0;
-        return acc;
-      }, {}),
+      totalExento: 0,
+      ivaRateTotals: {},
+      exentasCount: 0,
     },
   );
 

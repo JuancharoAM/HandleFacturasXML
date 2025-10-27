@@ -13,45 +13,58 @@ function buildOutputFilePath(directory) {
   return join(directory, `reporte-facturas-${timestamp}.xlsx`);
 }
 
-function addHeaderRow(worksheet) {
-  worksheet.columns = [
+function addHeaderRow(worksheet, ivaRates) {
+  const baseColumns = [
     { header: 'Archivo', key: 'fileName', width: 30 },
     { header: 'Clave', key: 'clave', width: 45 },
     { header: 'Consecutivo', key: 'consecutivo', width: 20 },
     { header: 'Fecha', key: 'fecha', width: 15 },
     { header: 'Total Gravado', key: 'totalGravado', width: 18 },
     { header: 'Subtotal', key: 'subtotal', width: 15 },
+    { header: 'Exento', key: 'exento', width: 15 },
     { header: 'IVA Total', key: 'totalIVA', width: 15 },
-    { header: 'IVA 1%', key: 'iva1', width: 15 },
-    { header: 'IVA 2%', key: 'iva2', width: 15 },
-    { header: 'IVA 13%', key: 'iva13', width: 15 },
-    { header: 'Total Comprobante', key: 'totalComprobante', width: 20 },
   ];
+  const ivaColumns = ivaRates.map((rate) => ({
+    header: `IVA ${rate}%`,
+    key: `iva_${rate}`,
+    width: 15,
+  }));
+  const tailColumns = [{ header: 'Total Comprobante', key: 'totalComprobante', width: 20 }];
+
+  worksheet.columns = [...baseColumns, ...ivaColumns, ...tailColumns];
+
+  // Apply thousands format with exactly 2 decimals to numeric columns
+  const nonNumeric = new Set(['fileName', 'clave', 'consecutivo', 'fecha']);
+  worksheet.columns.forEach((col) => {
+    if (!nonNumeric.has(col.key)) {
+      col.numFmt = '#,##0.00';
+    }
+  });
 
   worksheet.getRow(1).font = { bold: true };
 }
 
-function addInvoiceRows(worksheet, invoices) {
+function addInvoiceRows(worksheet, invoices, ivaRates) {
   invoices.forEach((invoice) => {
-    worksheet.addRow({
+    const rowData = {
       fileName: invoice.fileName,
       clave: invoice.clave,
       consecutivo: invoice.consecutivo,
       fecha: formatDate(invoice.issueDate),
       totalGravado: invoice.totalGravado,
       subtotal: invoice.subtotal,
+      exento: invoice.exento ?? 0,
       totalIVA: invoice.totalIVA,
-      iva1: invoice.ivaRateTotals[1] ?? 0,
-      iva2: invoice.ivaRateTotals[2] ?? 0,
-      iva13: invoice.ivaRateTotals[13] ?? 0,
       totalComprobante: invoice.totalComprobante,
+    };
+    ivaRates.forEach((rate) => {
+      rowData[`iva_${rate}`] = invoice.ivaRateTotals?.[rate] ?? 0;
     });
+    worksheet.addRow(rowData);
   });
 
   worksheet.eachRow((row, rowNumber) => {
-    if (rowNumber === 1) {
-      return;
-    }
+    if (rowNumber === 1) return;
     row.alignment = { horizontal: 'right' };
     row.getCell('fileName').alignment = { horizontal: 'left' };
     row.getCell('clave').alignment = { horizontal: 'left' };
@@ -60,18 +73,20 @@ function addInvoiceRows(worksheet, invoices) {
   });
 }
 
-function addTotalsRow(worksheet, aggregates) {
-  const totalsRow = worksheet.addRow({
+function addTotalsRow(worksheet, aggregates, ivaRates) {
+  const rowData = {
     fileName: 'Totales',
     totalGravado: aggregates.totalGravado,
     subtotal: aggregates.subtotal,
+    exento: aggregates.totalExento ?? 0,
     totalIVA: aggregates.totalIVA,
-    iva1: aggregates.ivaRateTotals[1] ?? 0,
-    iva2: aggregates.ivaRateTotals[2] ?? 0,
-    iva13: aggregates.ivaRateTotals[13] ?? 0,
     totalComprobante: aggregates.totalComprobante,
+  };
+  ivaRates.forEach((rate) => {
+    rowData[`iva_${rate}`] = aggregates.ivaRateTotals?.[rate] ?? 0;
   });
 
+  const totalsRow = worksheet.addRow(rowData);
   totalsRow.font = { bold: true };
   totalsRow.alignment = { horizontal: 'right' };
   totalsRow.getCell('fileName').alignment = { horizontal: 'left' };
@@ -88,12 +103,12 @@ function addSummarySheet(workbook, aggregates, invoiceCount) {
   sheet.addRow({ concept: 'Total Gravado', value: aggregates.totalGravado });
   sheet.addRow({ concept: 'Subtotal', value: aggregates.subtotal });
   sheet.addRow({ concept: 'IVA Total', value: aggregates.totalIVA });
-  sheet.addRow({ concept: 'IVA 1%', value: aggregates.ivaRateTotals[1] ?? 0 });
-  sheet.addRow({ concept: 'IVA 2%', value: aggregates.ivaRateTotals[2] ?? 0 });
-  sheet.addRow({ concept: 'IVA 13%', value: aggregates.ivaRateTotals[13] ?? 0 });
   sheet.addRow({ concept: 'Total Comprobante', value: aggregates.totalComprobante });
+  sheet.addRow({ concept: 'Total facturas exentas', value: aggregates.exentasCount ?? 0 });
+  sheet.addRow({ concept: 'Monto exento total', value: aggregates.totalExento ?? 0 });
 
   sheet.getRow(1).font = { bold: true };
+  sheet.getColumn('value').numFmt = '#,##0.00';
   sheet.eachRow((row, rowNumber) => {
     if (rowNumber === 1) {
       return;
@@ -106,9 +121,15 @@ function addSummarySheet(workbook, aggregates, invoiceCount) {
 export async function generateExcelReport(directory, invoices, aggregates) {
   const workbook = new ExcelJS.Workbook();
   const detailSheet = workbook.addWorksheet('Facturas');
-  addHeaderRow(detailSheet);
-  addInvoiceRows(detailSheet, invoices);
-  addTotalsRow(detailSheet, aggregates);
+  const ivaRates = Array.from(
+    new Set(
+      invoices.flatMap((inv) => Object.keys(inv.ivaRateTotals || {}).map((k) => Number(k))),
+    ),
+  ).sort((a, b) => a - b);
+
+  addHeaderRow(detailSheet, ivaRates);
+  addInvoiceRows(detailSheet, invoices, ivaRates);
+  addTotalsRow(detailSheet, aggregates, ivaRates);
   addSummarySheet(workbook, aggregates, invoices.length);
 
   const outputPath = buildOutputFilePath(directory);
