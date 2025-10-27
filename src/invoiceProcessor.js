@@ -5,11 +5,22 @@ import { XMLParser } from 'fast-xml-parser';
 const parser = new XMLParser({
   ignoreAttributes: false,
   attributeNamePrefix: '',
-  parseTagValue: true,
+  parseTagValue: false,
   trimValues: true,
+  // Ignore XML declaration and namespaces so tags parse cleanly
+  ignoreDeclaration: true,
+  ignoreNameSpace: true,
 });
 
 const IVA_RATES_OF_INTEREST = [1, 2, 13];
+const IVA_CODE_TO_RATE = {
+  '01': 13,
+  '02': 1,
+  '03': 2,
+  '04': 4,
+  '05': 8,
+  '06': 13,
+};
 
 function toNumber(value) {
   if (value === undefined || value === null || value === '') {
@@ -84,24 +95,56 @@ function extractIdentifiers(invoiceData) {
   const clave = findFirstKeyDeep(invoiceData, 'Clave');
   const numeroConsecutivo = findFirstKeyDeep(invoiceData, 'NumeroConsecutivo');
   return {
-    clave: typeof clave === 'string' ? clave : '',
-    consecutivo: typeof numeroConsecutivo === 'string' ? numeroConsecutivo : '',
+    clave: clave !== undefined && clave !== null ? String(clave) : '',
+    consecutivo: numeroConsecutivo !== undefined && numeroConsecutivo !== null ? String(numeroConsecutivo) : '',
   };
 }
 
-function aggregateByRate(lineItems) {
+function resolveIvaRate(impuesto) {
+  const explicitRate = toNumber(impuesto?.Tarifa ?? impuesto?.tarifa ?? impuesto?.Porcentaje);
+  if (explicitRate) {
+    return explicitRate;
+  }
+
+  const code = impuesto?.CodigoTarifaIVA ?? impuesto?.codigoTarifaIVA ?? impuesto?.CodigoTarifa ?? impuesto?.Codigo;
+  if (code && IVA_CODE_TO_RATE[code] !== undefined) {
+    return IVA_CODE_TO_RATE[code];
+  }
+
+  return null;
+}
+
+function aggregateByRate(lineItems, resumen) {
   const breakdown = new Map();
 
-  for (const line of lineItems) {
-    const impuestos = normalizeToArray(line.Impuesto || line.Impuestos);
-    for (const impuesto of impuestos) {
-      const rate = toNumber(impuesto?.Tarifa ?? impuesto?.tarifa ?? impuesto?.Porcentaje);
-      const amount = toNumber(impuesto?.Monto ?? impuesto?.MontoImpuesto);
-      if (!rate || !amount) {
-        continue;
+  const registerAmount = (rate, amount) => {
+    if (!rate || !Number.isFinite(rate) || !amount) return;
+    breakdown.set(rate, (breakdown.get(rate) ?? 0) + amount);
+  };
+
+  let hasResumenBreakdown = false;
+  if (resumen?.TotalDesgloseImpuesto) {
+    const desgloseEntries = normalizeToArray(resumen.TotalDesgloseImpuesto);
+    for (const entry of desgloseEntries) {
+      const rate = resolveIvaRate(entry);
+      const amount = toNumber(
+        entry?.TotalMontoImpuesto ?? entry?.MontoImpuesto ?? entry?.TotalImpuesto ?? entry?.Monto,
+      );
+      if (rate && amount) {
+        hasResumenBreakdown = true;
+        registerAmount(rate, amount);
       }
-      const current = breakdown.get(rate) ?? 0;
-      breakdown.set(rate, current + amount);
+    }
+  }
+
+  if (!hasResumenBreakdown) {
+    for (const line of lineItems) {
+      const impuestos = normalizeToArray(line.Impuesto || line.Impuestos);
+      for (const impuesto of impuestos) {
+        const rate = resolveIvaRate(impuesto);
+        const amount = toNumber(impuesto?.Monto ?? impuesto?.MontoImpuesto ?? impuesto?.MontoTotal);
+        registerAmount(rate, amount);
+      }
     }
   }
 
@@ -110,10 +153,7 @@ function aggregateByRate(lineItems) {
     totals[rate] = breakdown.get(rate) ?? 0;
   }
 
-  return {
-    breakdown,
-    totals,
-  };
+  return { breakdown, totals };
 }
 
 function extractLineItems(invoiceData) {
@@ -127,6 +167,10 @@ function extractLineItems(invoiceData) {
   }));
 }
 
+function sumIfPresent(values) {
+  return values.reduce((acc, value) => acc + toNumber(value), 0);
+}
+
 function extractSummary(invoiceData) {
   const resumen = findFirstKeyDeep(invoiceData, 'ResumenFactura');
   if (!resumen) {
@@ -135,46 +179,66 @@ function extractSummary(invoiceData) {
       subtotal: 0,
       totalIVA: 0,
       totalComprobante: 0,
+      resumenRaw: null,
     };
   }
 
-  const totalGravado = toNumber(
+  let totalGravado = toNumber(
     pickFirstAvailable(resumen, [
       'TotalGravado',
       'TotalVentaGravada',
-      'TotalServGravados',
-      'TotalMercanciasGravadas',
     ]),
   );
+  if (!totalGravado) {
+    totalGravado = sumIfPresent([
+      resumen.TotalServGravados,
+      resumen.TotalMercanciasGravadas,
+    ]);
+  }
 
   const subtotal = toNumber(
     pickFirstAvailable(resumen, [
       'TotalVenta',
       'TotalVentaNeta',
-      'TotalServGravados',
     ]),
   );
 
-  const totalIVA = toNumber(
+  let totalIVA = toNumber(
     pickFirstAvailable(resumen, [
       'TotalImpuesto',
       'TotalImpuestos',
     ]),
   );
+  if (!totalIVA && resumen.TotalDesgloseImpuesto) {
+    const desgloseEntries = normalizeToArray(resumen.TotalDesgloseImpuesto);
+    totalIVA = desgloseEntries.reduce(
+      (acc, entry) => acc + toNumber(entry?.TotalMontoImpuesto ?? entry?.MontoImpuesto ?? entry?.Monto),
+      0,
+    );
+  }
 
-  const totalComprobante = toNumber(
+  let totalComprobante = toNumber(
     pickFirstAvailable(resumen, [
       'TotalComprobante',
       'TotalFactura',
       'TotalDocumento',
+      'TotalMedioPago',
     ]),
   );
+  if (!totalComprobante && resumen.MedioPago) {
+    const medios = normalizeToArray(resumen.MedioPago);
+    totalComprobante = medios.reduce(
+      (acc, medio) => acc + toNumber(medio?.TotalMedioPago ?? medio?.Monto ?? medio?.Total),
+      0,
+    );
+  }
 
   return {
     totalGravado,
     subtotal,
     totalIVA,
     totalComprobante,
+    resumenRaw: resumen,
   };
 }
 
@@ -217,7 +281,7 @@ export async function processInvoices(directory, { startDate = null, endDate = n
       const issueDate = extractInvoiceDate(root);
       const summary = extractSummary(root);
       const lineItems = extractLineItems(root);
-      const { breakdown, totals: ivaTotals } = aggregateByRate(lineItems);
+      const { breakdown, totals: ivaTotals } = aggregateByRate(lineItems, summary.resumenRaw);
 
       const totalIVA = summary.totalIVA || Array.from(breakdown.values()).reduce((acc, value) => acc + value, 0);
 
@@ -225,7 +289,7 @@ export async function processInvoices(directory, { startDate = null, endDate = n
 
       invoices.push({
         filePath,
-        fileName: filePath.split(/[/\\]/).pop(),
+        fileName: filePath.split(/[\/\\]/).pop(),
         issueDate,
         clave,
         consecutivo,
