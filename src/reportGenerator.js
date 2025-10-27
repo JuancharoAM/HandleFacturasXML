@@ -110,8 +110,8 @@ function addSummarySheet(workbook, aggregates, invoiceCount) {
     .sort((a, b) => a - b);
 
   ivaRates.forEach((rate) => {
-    const grav = aggregates.gravadoRateTotals?.[rate] ?? 0;
     const iva = aggregates.ivaRateTotals?.[rate] ?? 0;
+    const grav = iva/(rate/100);
     sheet.addRow({ concept: `Total gravado ${rate}%`, value: grav });
     sheet.addRow({ concept: `Total IVA ${rate}%`, value: iva });
   });
