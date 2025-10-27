@@ -1,0 +1,24 @@
+{
+  "name": "handle-facturas-xml",
+  "version": "1.0.0",
+  "description": "Aplicación para leer facturas electrónicas XML de Costa Rica y generar reportes en Excel.",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "keywords": [
+    "facturas",
+    "xml",
+    "costa-rica",
+    "excel",
+    "reportes"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "exceljs": "^4.3.0",
+    "fast-xml-parser": "^4.3.3",
+    "inquirer": "^9.2.11"
+  }
+}
