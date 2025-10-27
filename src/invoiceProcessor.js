@@ -13,12 +13,10 @@ const parser = new XMLParser({
 });
 
 const IVA_CODE_TO_RATE = {
-  '01': 13,
+  '01': 0,
   '02': 1,
   '03': 2,
-  '04': 4,
-  '05': 8,
-  '06': 13,
+  '08': 13,
 };
 
 function toNumber(value) {
@@ -69,6 +67,26 @@ function normalizeToArray(value) {
   return Array.isArray(value) ? value : [value];
 }
 
+function round2(n) {
+  return Math.round((Number(n) || 0) * 100) / 100;
+}
+
+function collectAllByKeyDeep(object, keyToFind) {
+  const results = [];
+  function walk(obj) {
+    if (!obj || typeof obj !== 'object') return;
+    for (const [k, v] of Object.entries(obj)) {
+      if (k === keyToFind) {
+        if (Array.isArray(v)) results.push(...v);
+        else results.push(v);
+      }
+      if (v && typeof v === 'object') walk(v);
+    }
+  }
+  walk(object);
+  return results;
+}
+
 function extractInvoiceDate(invoiceData) {
   const possibleDateKeys = [
     'FechaEmision',
@@ -100,58 +118,130 @@ function extractIdentifiers(invoiceData) {
 }
 
 function resolveIvaRate(impuesto) {
+  // Prefer CodigoTarifaIVA per v1.0.2
+  const codeRaw = impuesto?.CodigoTarifaIVA ?? impuesto?.codigoTarifaIVA;
+  if (codeRaw !== undefined) {
+    const code = String(codeRaw).padStart(2, '0');
+    if (IVA_CODE_TO_RATE[code] !== undefined) {
+      return IVA_CODE_TO_RATE[code];
+    }
+  }
+  // Fallback to Tarifa numeric only if no code match
   const explicitRate = toNumber(impuesto?.Tarifa ?? impuesto?.tarifa ?? impuesto?.Porcentaje);
-  if (explicitRate) {
+  if (explicitRate || explicitRate === 0) {
     return explicitRate;
   }
-
-  const code = impuesto?.CodigoTarifaIVA ?? impuesto?.codigoTarifaIVA ?? impuesto?.CodigoTarifa ?? impuesto?.Codigo;
-  if (code && IVA_CODE_TO_RATE[code] !== undefined) {
-    return IVA_CODE_TO_RATE[code];
-  }
-
   return null;
 }
 
 function aggregateByRate(lineItems, resumen) {
+  // v1.0.2 refined: Prefer desglose del Resumen; si no viene, usar líneas
   const breakdown = new Map();
-
   const registerAmount = (rate, amount) => {
-    if (!rate || !Number.isFinite(rate) || !amount) return;
-    breakdown.set(rate, (breakdown.get(rate) ?? 0) + amount);
+    const r = rate;
+    const a = toNumber(amount);
+    if (r === null || r === undefined || !Number.isFinite(a)) return;
+    breakdown.set(r, (breakdown.get(r) ?? 0) + a);
   };
 
-  let hasResumenBreakdown = false;
-  if (resumen?.TotalDesgloseImpuesto) {
-    const desgloseEntries = normalizeToArray(resumen.TotalDesgloseImpuesto);
-    for (const entry of desgloseEntries) {
-      const rate = resolveIvaRate(entry);
-      const amount = toNumber(
-        entry?.TotalMontoImpuesto ?? entry?.MontoImpuesto ?? entry?.TotalImpuesto ?? entry?.Monto,
-      );
-      if (rate && amount) {
-        hasResumenBreakdown = true;
-        registerAmount(rate, amount);
+  // Gather all possible desglose entries robustly
+  const candidates = [
+    ...(normalizeToArray(resumen?.TotalDesgloseFactura)),
+    ...(normalizeToArray(resumen?.TotalDesgloseImpuesto)),
+    ...collectAllByKeyDeep(resumen, 'TotalDesgloseFactura'),
+    ...collectAllByKeyDeep(resumen, 'TotalDesgloseImpuesto'),
+  ];
+  const entries = candidates
+    .flatMap((x) => normalizeToArray(x))
+    .filter((e) => e && typeof e === 'object');
+
+  let source = 'resumen';
+  const seen = new Set();
+  for (const entry of entries) {
+    const codigo = String(entry?.Codigo ?? entry?.codigo ?? '').padStart(2, '0');
+    if (codigo && codigo !== '01') continue; // only IVA
+    const rate = resolveIvaRate(entry); // via CodigoTarifaIVA
+    const amount = entry?.TotalMontoImpuesto ?? entry?.MontoImpuesto;
+    const codeTarifa = String(entry?.CodigoTarifaIVA ?? entry?.codigoTarifaIVA ?? '').padStart(2, '0');
+    const key = `${codigo}|${codeTarifa}|${amount}`;
+    if (amount !== undefined && !seen.has(key)) {
+      seen.add(key);
+      registerAmount(rate, amount);
+    }
+  }
+
+  // If no valid desglose found in resumen, compute from line items
+  if (breakdown.size === 0) {
+    source = 'lineas';
+    for (const line of lineItems || []) {
+      const impuestos = normalizeToArray(line?.Impuesto || line?.Impuestos);
+      for (const imp of impuestos) {
+        const codigo = String(imp?.Codigo ?? imp?.codigo ?? '').padStart(2, '0');
+        if (codigo && codigo !== '01') continue; // only IVA
+        const rate = resolveIvaRate(imp);
+        const amount = imp?.Monto ?? imp?.MontoImpuesto;
+        if (rate !== null && rate !== undefined && amount !== undefined) {
+          registerAmount(rate, amount);
+        }
       }
     }
   }
 
-  if (!hasResumenBreakdown) {
-    for (const line of lineItems) {
-      const impuestos = normalizeToArray(line.Impuesto || line.Impuestos);
-      for (const impuesto of impuestos) {
-        const rate = resolveIvaRate(impuesto);
-        const amount = toNumber(impuesto?.Monto ?? impuesto?.MontoImpuesto ?? impuesto?.MontoTotal);
-        registerAmount(rate, amount);
-      }
-    }
+  const totals = Object.fromEntries(Array.from(breakdown.entries()));
+  return { breakdown, totals, source };
+}
+
+function reconcileIvaBreakdown(totalsObj, expectedTotal) {
+  const expected = toNumber(expectedTotal);
+  const entries = Object.entries(totalsObj || {}).filter(([rate]) => Number(rate) !== 0);
+  const sum = entries.reduce((acc, [, val]) => acc + toNumber(val), 0);
+  const sumR = round2(sum);
+  const expR = round2(expected);
+
+  const info = { adjusted: false, diffApplied: 0, adjustedRate: null, noDesglose: entries.length === 0 };
+
+  if (expR === 0 && sumR === 0) {
+    return { totals: totalsObj, info };
   }
 
-  const totals = Object.fromEntries(
-    Array.from(breakdown.entries()).map(([rate, amount]) => [rate, amount]),
-  );
+  if (sumR === expR || entries.length === 0) {
+    // either already matches (within 2 decimals) or no desglose to adjust
+    return { totals: totalsObj, info };
+  }
 
-  return { breakdown, totals };
+  if (sum <= 0) {
+    // Nothing to scale; leave as-is but mark discrepancy
+    info.adjusted = false;
+    info.diffApplied = round2(expR - sumR);
+    return { totals: totalsObj, info };
+  }
+
+  const scale = expected / sum;
+  // Scale and round to 2 decimals, then fix residual on the largest amount
+  const sorted = entries
+    .map(([rate, val]) => [Number(rate), toNumber(val)])
+    .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]));
+  const adjusted = new Map();
+  let running = 0;
+  for (let i = 0; i < sorted.length; i += 1) {
+    const [rate, val] = sorted[i];
+    let newVal = val * scale;
+    if (i < sorted.length - 1) {
+      newVal = round2(newVal);
+      running += newVal;
+    } else {
+      // last takes the residual to ensure exact match in 2 decimals
+      newVal = round2(expR - running);
+    }
+    adjusted.set(rate, newVal);
+  }
+
+  const totals = Object.fromEntries(adjusted.entries());
+  const adjSum = Object.values(totals).reduce((a, b) => a + b, 0);
+  info.adjusted = true;
+  info.diffApplied = round2(expR - sumR);
+  info.adjustedRate = sorted[0]?.[0] ?? null;
+  return { totals, info };
 }
 
 function extractLineItems(invoiceData) {
@@ -293,11 +383,22 @@ export async function processInvoices(directory, { startDate = null, endDate = n
       const issueDate = extractInvoiceDate(root);
       const summary = extractSummary(root);
       const lineItems = extractLineItems(root);
-      const { breakdown, totals: ivaTotals } = aggregateByRate(lineItems, summary.resumenRaw);
+      const { breakdown, totals: ivaTotalsRaw, source: ivaSource } = aggregateByRate(lineItems, summary.resumenRaw);
+      const expectedIvaTotal = toNumber(summary.totalIVA || 0);
+      const { totals: ivaTotals, info: ivaInfo } = reconcileIvaBreakdown(ivaTotalsRaw, expectedIvaTotal);
 
-      const totalIVA = summary.totalIVA || Array.from(breakdown.values()).reduce((acc, value) => acc + value, 0);
+      const totalIVA = expectedIvaTotal || Object.values(ivaTotals).reduce((acc, v) => acc + toNumber(v), 0);
 
       const { clave, consecutivo } = extractIdentifiers(root);
+
+      const observations = [];
+      if (ivaSource === 'lineas') {
+        observations.push('Sin desglose de IVA en resumen; desglose basado en líneas.');
+      }
+      if (ivaInfo.adjusted && Math.abs(ivaInfo.diffApplied) >= 0.01) {
+        const rateStr = ivaInfo.adjustedRate != null ? `${ivaInfo.adjustedRate}%` : '';
+        observations.push(`Ajuste IVA por tasa (${rateStr}) por diferencia de ${round2(ivaInfo.diffApplied)} para cuadrar TotalImpuesto.`);
+      }
 
       invoices.push({
         filePath,
@@ -312,6 +413,7 @@ export async function processInvoices(directory, { startDate = null, endDate = n
         totalComprobante: summary.totalComprobante,
         isExenta: totalIVA === 0 && summary.totalExento > 0,
         exento: summary.totalExento,
+        observations: observations.join(' '),
       });
     } catch (error) {
       console.warn(`No se pudo procesar el archivo ${filePath}: ${error.message}`);

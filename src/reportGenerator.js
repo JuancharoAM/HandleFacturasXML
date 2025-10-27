@@ -29,12 +29,12 @@ function addHeaderRow(worksheet, ivaRates) {
     key: `iva_${rate}`,
     width: 15,
   }));
-  const tailColumns = [{ header: 'Total Comprobante', key: 'totalComprobante', width: 20 }];
+  const tailColumns = [{ header: 'Total Comprobante', key: 'totalComprobante', width: 20 },{ header: 'Observaciones', key: 'observaciones', width: 50 }];
 
   worksheet.columns = [...baseColumns, ...ivaColumns, ...tailColumns];
 
   // Apply thousands format with exactly 2 decimals to numeric columns
-  const nonNumeric = new Set(['fileName', 'clave', 'consecutivo', 'fecha']);
+  const nonNumeric = new Set(['fileName', 'clave', 'consecutivo', 'fecha', 'observaciones']);
   worksheet.columns.forEach((col) => {
     if (!nonNumeric.has(col.key)) {
       col.numFmt = '#,##0.00';
@@ -56,6 +56,7 @@ function addInvoiceRows(worksheet, invoices, ivaRates) {
       exento: invoice.exento ?? 0,
       totalIVA: invoice.totalIVA,
       totalComprobante: invoice.totalComprobante,
+      observaciones: invoice.observations || '',
     };
     ivaRates.forEach((rate) => {
       rowData[`iva_${rate}`] = invoice.ivaRateTotals?.[rate] ?? 0;
@@ -70,6 +71,7 @@ function addInvoiceRows(worksheet, invoices, ivaRates) {
     row.getCell('clave').alignment = { horizontal: 'left' };
     row.getCell('consecutivo').alignment = { horizontal: 'left' };
     row.getCell('fecha').alignment = { horizontal: 'center' };
+    row.getCell('observaciones').alignment = { horizontal: 'left' };
   });
 }
 
@@ -125,7 +127,7 @@ export async function generateExcelReport(directory, invoices, aggregates) {
     new Set(
       invoices.flatMap((inv) => Object.keys(inv.ivaRateTotals || {}).map((k) => Number(k))),
     ),
-  ).sort((a, b) => a - b);
+  ).filter((r) => r !== 0).sort((a, b) => a - b);
 
   addHeaderRow(detailSheet, ivaRates);
   addInvoiceRows(detailSheet, invoices, ivaRates);
