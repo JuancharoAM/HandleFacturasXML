@@ -1,11 +1,12 @@
-﻿{
+{
   "name": "handle-facturas-xml",
   "version": "1.0.4",
   "description": "AplicaciÃ³n para leer facturas electrÃ³nicas XML de Costa Rica y generar reportes en Excel.",
   "main": "src/index.js",
   "type": "module",
   "scripts": {
-    "start": "node src/index.js"
+    "start": "node src/index.js",
+    "electron:select-folder": "electron ./selectFolder.cjs"
   },
   "keywords": [
     "facturas",
@@ -20,8 +21,16 @@
     "exceljs": "^4.3.0",
     "fast-xml-parser": "^4.3.3",
     "inquirer": "^9.2.11"
-  }
+  },
+  "devDependencies": {
+    "electron": "^32.3.3"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/JuancharoAM/HandleFacturasXML.git"
+  },
+  "bugs": {
+    "url": "https://github.com/JuancharoAM/HandleFacturasXML/issues"
+  },
+  "homepage": "https://github.com/JuancharoAM/HandleFacturasXML#readme"
 }
-
-
-

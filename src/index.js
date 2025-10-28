@@ -1,9 +1,11 @@
 import inquirer from 'inquirer';
-import { resolve, isAbsolute } from 'path';
+import { resolve, isAbsolute, path } from 'path';
 import { promises as fs } from 'fs';
 import { fileURLToPath } from 'url';
 import { processInvoices } from './invoiceProcessor.js';
 import { generateExcelReport } from './reportGenerator.js';
+import { spawn } from 'child_process';
+import electronBinary from 'electron';
 
 async function ensureDirectoryExists(dirPath) {
   try {
@@ -21,22 +23,56 @@ function normalizeDirectory(input) {
   return isAbsolute(input) ? input : resolve(process.cwd(), input);
 }
 
-async function promptUser() {
+async function pickFolder() {
+  return new Promise((resolve, reject) => {
+    const electronMain = path.join(__dirname, 'electron', 'selectFolder.cjs');
+
+    const child = spawn(electronBinary, [electronMain], {
+      stdio: ['ignore', 'pipe', 'inherit'], // stdout = ruta de la carpeta
+    });
+
+    let output = '';
+    child.stdout.on('data', (chunk) => (output += chunk));
+
+    child.on('close', (code) => {
+      const folder = output.trim();
+      if (code === 0 && folder) {
+        resolve(folder);
+      } else {
+        reject(new Error('Selección cancelada por el usuario'));
+      }
+    });
+  });
+}
+
+export async function promptUser() {
+  let selectedDir = null;
+
+  try {
+    console.log('🗂  Abriendo selector de carpeta...');
+    selectedDir = await pickFolder();
+    console.log('📁 Carpeta seleccionada:', selectedDir);
+
+    if (!selectedDir) {
+      console.error('❌ No se seleccionó ninguna carpeta');
+      return null;
+    }
+
+    const exists = await ensureDirectoryExists(selectedDir);
+    if (!exists) {
+      console.error('❌ La ruta seleccionada no es una carpeta válida');
+      return null;
+    }
+  } catch (err) {
+    console.error('❌ Error al seleccionar la carpeta:', err.message);
+    return null;
+  }
+
+  // Normaliza la ruta
+  selectedDir = normalizeDirectory(selectedDir.trim());
+
+  // Resto de preguntas con inquirer
   const answers = await inquirer.prompt([
-    {
-      type: 'input',
-      name: 'directory',
-      message: 'Ingrese la ruta de la carpeta que contiene los XML de facturas:',
-      validate: async (input) => {
-        const dir = normalizeDirectory(input.trim());
-        if (!dir) {
-          return 'Debe ingresar una ruta válida';
-        }
-        const exists = await ensureDirectoryExists(dir);
-        return exists || 'La ruta indicada no es una carpeta válida';
-      },
-      filter: (input) => normalizeDirectory(input.trim()),
-    },
     {
       type: 'confirm',
       name: 'useDateFilter',
@@ -76,7 +112,7 @@ async function promptUser() {
   ]);
 
   return {
-    directory: answers.directory,
+    directory: selectedDir,
     startDate: answers.useDateFilter ? new Date(answers.startDate) : null,
     endDate: answers.useDateFilter ? new Date(answers.endDate) : null,
   };
