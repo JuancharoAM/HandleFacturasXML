@@ -1,11 +1,12 @@
 import inquirer from 'inquirer';
-import { resolve, isAbsolute, path } from 'path';
+import { resolve, isAbsolute } from 'path';
 import { promises as fs } from 'fs';
 import { fileURLToPath } from 'url';
 import { processInvoices } from './invoiceProcessor.js';
 import { generateExcelReport } from './reportGenerator.js';
 import { spawn } from 'child_process';
 import electronBinary from 'electron';
+import path from 'path';
 
 async function ensureDirectoryExists(dirPath) {
   try {
@@ -24,8 +25,11 @@ function normalizeDirectory(input) {
 }
 
 async function pickFolder() {
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
   return new Promise((resolve, reject) => {
-    const electronMain = path.join(__dirname, 'electron', 'selectFolder.cjs');
+    const electronMain = path.join(__dirname, 'selectFolder.cjs');
 
     const child = spawn(electronBinary, [electronMain], {
       stdio: ['ignore', 'pipe', 'inherit'], // stdout = ruta de la carpeta
