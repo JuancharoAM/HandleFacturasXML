@@ -20,6 +20,7 @@ function addHeaderRow(worksheet, ivaRates) {
     { header: 'Consecutivo', key: 'consecutivo', width: 20 },
     { header: 'Fecha', key: 'fecha', width: 15 },
     { header: 'Total Gravado', key: 'totalGravado', width: 18 },
+    {header: 'Total Descuentos', key: 'totalDescuentos', width: 18 },
     { header: 'Exento', key: 'exento', width: 15 },
     { header: 'IVA Total', key: 'totalIVA', width: 15 },
   ];
@@ -51,6 +52,7 @@ function addInvoiceRows(worksheet, invoices, ivaRates) {
       consecutivo: invoice.consecutivo,
       fecha: formatDate(invoice.issueDate),
       totalGravado: invoice.totalGravado,
+      totalDescuentos: invoice.totalDescuentos,
       exento: invoice.exento ?? 0,
       totalIVA: invoice.totalIVA,
       totalComprobante: invoice.totalComprobante,
@@ -77,6 +79,7 @@ function addTotalsRow(worksheet, aggregates, ivaRates) {
   const rowData = {
     fileName: 'Totales',
     totalGravado: aggregates.totalGravado,
+    totalDescuentos: aggregates.totalDescuentos,
     exento: aggregates.totalExento ?? 0,
     totalIVA: aggregates.totalIVA,
     totalComprobante: aggregates.totalComprobante,
@@ -99,6 +102,7 @@ function addSummarySheet(workbook, aggregates, invoiceCount) {
   ];
 
   sheet.addRow({ concept: 'Total Gravado', value: aggregates.totalGravado });
+  sheet.addRow({ concept: 'Total Descuentos', value: aggregates.totalDescuentos });
   sheet.addRow({ concept: 'IVA Total', value: aggregates.totalIVA });
   sheet.addRow({ concept: 'Total Comprobante', value: aggregates.totalComprobante });
   sheet.addRow({ concept: 'Monto exento total', value: aggregates.totalExento ?? 0 });

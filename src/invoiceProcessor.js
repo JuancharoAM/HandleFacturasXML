@@ -282,6 +282,7 @@ function extractSummary(invoiceData) {
       totalIVA: 0,
       totalComprobante: 0,
       totalExento: 0,
+      totalDescuentos: 0,
       resumenRaw: null,
     };
   }
@@ -347,6 +348,13 @@ function extractSummary(invoiceData) {
       resumen.TotalMercanciasExentas,
     ]);
   }
+// Total descuentos por resumen
+  let totalDescuentos = toNumber(
+    pickFirstAvailable(resumen, [
+      'TotalDescuentos',
+      'TotalDescuento',
+    ]),
+  );
 
   return {
     totalGravado,
@@ -354,6 +362,7 @@ function extractSummary(invoiceData) {
     totalIVA,
     totalComprobante,
     totalExento,
+    totalDescuentos,
     resumenRaw: resumen,
   };
 }
@@ -421,6 +430,7 @@ export async function processInvoices(directory, { startDate = null, endDate = n
         clave,
         consecutivo,
         totalGravado: summary.totalGravado,
+        totalDescuentos: summary.totalDescuentos,
         subtotal: summary.subtotal,
         totalIVA,
         ivaRateTotals: ivaTotals,
@@ -440,6 +450,7 @@ export async function processInvoices(directory, { startDate = null, endDate = n
   const aggregates = filteredInvoices.reduce(
     (acc, invoice) => {
       acc.totalGravado += invoice.totalGravado;
+      acc.totalDescuentos += invoice.totalDescuentos;
       acc.totalIVA += invoice.totalIVA;
       acc.totalComprobante += invoice.totalComprobante;
       acc.totalExento += invoice.exento ?? 0;
@@ -458,6 +469,7 @@ export async function processInvoices(directory, { startDate = null, endDate = n
     },
     {
       totalGravado: 0,
+      totalDescuentos: 0,
       totalIVA: 0,
       totalComprobante: 0,
       totalExento: 0,
